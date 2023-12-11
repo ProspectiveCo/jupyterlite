@@ -1,6 +1,66 @@
 import { IJavaScriptWorkerKernel } from './tokens';
 
+import * as vfs from '@typescript/vfs';
+import inspect from 'object-inspect';
+
+function storageMock() {
+  let storage: any = {};
+
+  return {
+    setItem: function (key: any, value: any) {
+      console.log('SET', key, value);
+      storage[key] = value || '';
+    },
+    getItem: function (key: any) {
+      console.log('GET', key);
+      return key in storage ? storage[key] : null;
+    },
+    removeItem: function (key: any) {
+      delete storage[key];
+    },
+    get length() {
+      return Object.keys(storage).length;
+    },
+    key: function (i: any) {
+      const keys = Object.keys(storage);
+      return keys[i] || null;
+    },
+    clear: function () {
+      storage = {};
+    },
+  };
+}
 export class JavaScriptRemoteKernel {
+  private tsEnv: Promise<vfs.VirtualTypeScriptEnvironment>;
+
+  constructor() {
+    this.tsEnv = new Promise(async (resolve, reject) => {
+      const ts = (
+        await import(
+          /* webpackIgnore: true */ 'https://cdn.jsdelivr.net/npm/typescript@5.3.3/+esm'
+        )
+      ).default;
+      const fsMap = await vfs.createDefaultMapFromCDN(
+        {
+          target: ts.ScriptTarget.ES2021,
+        },
+        ts.version,
+        true,
+        ts,
+        undefined,
+        undefined,
+        storageMock(),
+      );
+      const system = vfs.createSystem(fsMap);
+      const tsEnv = vfs.createVirtualTypeScriptEnvironment(system, [], ts, {
+        allowJs: true,
+      });
+      // tsEnv.createFile('/index.ts', 'let foo: string = 5;');
+      resolve(tsEnv);
+    });
+    void this.tsEnv;
+  }
+
   /**
    * Initialize the remote kernel.
    *
@@ -44,7 +104,15 @@ export class JavaScriptRemoteKernel {
   async execute(content: any, parent: any) {
     const { code } = content;
     try {
-      const result = self.eval(code);
+      const tsEnv = await this.tsEnv;
+      tsEnv.createFile('/index.ts', code);
+      const output = tsEnv.languageService.getEmitOutput('/index.ts');
+      console.log('output files', output.outputFiles);
+      const diagnostics = tsEnv.languageService.getSyntacticDiagnostics('/index.ts');
+      if (diagnostics.length > 0) {
+        console.error(inspect(diagnostics));
+      }
+      const result = self.eval(output.outputFiles[0].text);
       this._executionCount++;
 
       const bundle = {
